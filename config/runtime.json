@@ -1,0 +1,29 @@
+{
+  "channel_entry_limits": {
+    "stopwatch": 20,
+    "music": 5,
+    "video": 3,
+    "voice": 10
+  },
+  "timing": {
+    "stopwatch_tick_seconds": 1.0,
+    "min_schedule_lead_ms": 500,
+    "channel_cleanup_interval_seconds": 60,
+    "empty_channel_ttl_seconds": 300
+  },
+  "rtc": {
+    "ice_servers": [
+      {
+        "urls": [
+          "stun:stun.l.google.com:19302",
+          "stun:stun1.l.google.com:19302"
+        ]
+      }
+    ]
+  },
+  "server": {
+    "host": "0.0.0.0",
+    "port": 3000,
+    "debug": true
+  }
+}
