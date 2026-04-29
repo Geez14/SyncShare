@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-
 import { deriveTrackTitle, formatClock } from '@/lib/utils';
+import { useSocket } from '@/lib/use-socket';
 
 interface VideoSync {
   currentTime?: number;
@@ -12,52 +12,14 @@ interface VideoSync {
   timestamp?: number;
   src?: string;
   trackTitle?: string;
-  syncId?: string;
-  syncSessionId?: string;
-  requiresAck?: boolean;
-  syncToleranceMs?: number;
-  sourceMode?: string;
-  activeSourcePresent?: boolean;
-  action?: string;
 }
 
 interface VideoModuleProps {
   isHost: boolean;
   sync: VideoSync | any;
   onControl: (action: string, payload?: Record<string, unknown>) => void;
-  onAckSync?: (syncId: string) => void;
-}
-
-async function fileToDataUrl(file: File): Promise<string> {
-  return await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('Failed to read file.'));
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.readAsDataURL(file);
-  });
-}
-
-async function fileToDuration(file: File): Promise<number> {
-  const objectUrl = URL.createObjectURL(file);
-  try {
-    return await new Promise<number>((resolve) => {
-      const video = document.createElement('video');
-      video.preload = 'metadata';
-      video.onloadedmetadata = () => {
-        const duration = Number.isFinite(video.duration) ? video.duration : 0;
-        resolve(duration);
-        URL.revokeObjectURL(objectUrl);
-      };
-      video.onerror = () => {
-        resolve(0);
-        URL.revokeObjectURL(objectUrl);
-      };
-      video.src = objectUrl;
-    });
-  } catch {
-    URL.revokeObjectURL(objectUrl);
-    return 0;
-  }
+  channelId: string;
+  userId: string;
 }
 
 function isYouTubeUrl(url: string): boolean {
@@ -90,111 +52,137 @@ function embedUrl(url: string, startSeconds = 0): string {
   return `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&controls=1&start=${Math.max(0, Math.floor(startSeconds))}&rel=0`;
 }
 
-export default function VideoModule({ isHost, sync, onControl, onAckSync }: VideoModuleProps) {
+export default function VideoModule({
+  isHost,
+  sync,
+  onControl,
+  channelId,
+  userId
+}: VideoModuleProps) {
+  const { socket } = useSocket();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const lastAppliedRef = useRef<{ src?: string; paused?: boolean; time?: number }>({});
   const lastEmbedSrcRef = useRef('');
   const lastEmbedSetAtRef = useRef(0);
   const [url, setUrl] = useState('');
-  const [currentTick, setCurrentTick] = useState(0);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uiTick, setUiTick] = useState(0);
   const [currentTime, setCurrentTime] = useState(Number(sync.currentTime || 0));
   const [title, setTitle] = useState(sync.trackTitle || 'Untitled');
 
+  // Tick for UI updates (1 second interval) - NO dependency issues here
   useEffect(() => {
-    const timer = setInterval(() => setCurrentTick((value) => value + 1), 250);
+    const timer = setInterval(() => setUiTick((v) => v + 1), 1000);
     return () => clearInterval(timer);
   }, []);
 
+  // Sync video state from server - only respond to actual state changes
   useEffect(() => {
     const video = videoRef.current;
     const iframe = iframeRef.current;
     if (!sync.src) return;
 
-    // set title (prefer explicit trackTitle, else derive from URL with hostname fallback)
-    try {
-      const derived = sync.trackTitle || deriveTrackTitle(String(sync.src || ''), 'Unknown');
-      setTitle(derived || 'Unknown');
-    } catch {
-      setTitle('Unknown');
-    }
+    setTitle(sync.trackTitle || deriveTrackTitle(sync.src) || 'Unknown Video');
 
-    const predictedRaw = sync.paused
+    const predictedTime = sync.paused
       ? Number(sync.currentTime || 0)
-      : Number(sync.currentTime || 0) + (Date.now() - Number(sync.timestamp || Date.now())) / 1000;
-    const predicted = duration > 0 ? Math.min(predictedRaw, duration) : predictedRaw;
-    setCurrentTime(predicted);
+      : Number(sync.currentTime || 0) + (Date.now() - Number(sync.timestamp || 0)) / 1000;
 
-    if (sync.requiresAck && (sync.syncId || sync.syncSessionId)) {
-      onAckSync?.(String(sync.syncId || sync.syncSessionId));
-    }
+    setCurrentTime(predictedTime);
 
-    // Handle YouTube embeds more conservatively to avoid rapid reload loops that trigger blocked network requests
+    // Handle YouTube embeds
     if (isYouTubeUrl(sync.src)) {
       if (iframe) {
+        const embed = embedUrl(sync.src, predictedTime);
+        const now = Date.now();
+        const lastEmbed = lastEmbedSrcRef.current || '';
+
+        let lastStart = 0,
+          newStart = 0;
         try {
-          const embed = embedUrl(sync.src, predicted);
-          const now = Date.now();
-          const lastEmbed = lastEmbedSrcRef.current || '';
+          lastStart = Number(new URL(lastEmbed).searchParams.get('start') || 0);
+        } catch {}
+        try {
+          newStart = Number(new URL(embed).searchParams.get('start') || 0);
+        } catch {}
 
-          // parse start seconds for comparison
-          let lastStart = 0;
-          let newStart = 0;
-          try {
-            lastStart = Number(new URL(lastEmbed).searchParams.get('start') || 0);
-          } catch {}
-          try {
-            newStart = Number(new URL(embed).searchParams.get('start') || 0);
-          } catch {}
-
-          const shouldReload = !lastEmbed || Math.abs(newStart - lastStart) > 8 || (now - lastEmbedSetAtRef.current) > 20000 || !iframe.src.includes('youtube');
-          if (shouldReload) {
-            iframe.src = embed;
-            lastEmbedSrcRef.current = embed;
-            lastEmbedSetAtRef.current = now;
-          }
-        } catch {
-          // ignore embed URL parsing errors
+        const shouldReload =
+          !lastEmbed || Math.abs(newStart - lastStart) > 8 || now - lastEmbedSetAtRef.current > 20000 || !iframe.src.includes('youtube');
+        if (shouldReload) {
+          iframe.src = embed;
+          lastEmbedSrcRef.current = embed;
+          lastEmbedSetAtRef.current = now;
         }
       }
-
       if (video) video.pause();
       return;
     }
 
+    // Handle direct video playback
     if (!video) return;
-    if (video.src !== sync.src) {
+    if (lastAppliedRef.current.src !== sync.src) {
       video.src = sync.src;
       video.load();
+      lastAppliedRef.current.src = sync.src;
+      lastAppliedRef.current.time = undefined;
     }
 
-    if (Number.isFinite(predicted) && Math.abs((video.currentTime || 0) - predicted) > 1) {
-      video.currentTime = Math.max(0, predicted);
+    if (Math.abs((video.currentTime || 0) - predictedTime) > 2) {
+      video.currentTime = Math.max(0, predictedTime);
+      lastAppliedRef.current.time = predictedTime;
     }
 
     if (sync.paused) {
-      video.pause();
-    } else {
+      if (!video.paused) {
+        video.pause();
+      }
+      lastAppliedRef.current.paused = true;
+    } else if (video.paused) {
       video.play().catch(() => undefined);
+      lastAppliedRef.current.paused = false;
     }
-  }, [sync, currentTick, onAckSync]);
+  }, [sync.src, sync.currentTime, sync.duration, sync.paused, sync.timestamp, sync.trackTitle]);
 
-  const duration = useMemo(() => Number(sync.duration || 0), [sync.duration, currentTick]);
-  const displayTime = duration > 0 ? Math.min(sync.paused ? Number(sync.currentTime || 0) : currentTime, duration) : (sync.paused ? Number(sync.currentTime || 0) : currentTime);
+  const duration = useMemo(() => Number(sync.duration || 0), [sync.duration]);
+  const displayTime = duration > 0 ? Math.min(sync.paused ? Number(sync.currentTime || 0) : currentTime, duration) : currentTime;
+  const displayClock = useMemo(() => formatClock(displayTime), [displayTime, uiTick]);
+  const displayDuration = useMemo(() => formatClock(duration), [duration, uiTick]);
 
   const loadVideo = async (file?: File | null) => {
     if (file) {
-      const dataUrl = await fileToDataUrl(file);
-      const fileDuration = await fileToDuration(file);
-      onControl('load_track', {
-        url: dataUrl,
-        title: file.name,
-        sourceMode: 'local',
-        duration: fileDuration,
-        currentTime: 0,
-        paused: true
-      });
-      setTitle(file.name);
-      setUrl('');
+      // Upload file to server
+      setIsUploading(true);
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const res = await fetch(`/api/channels/${channelId}/upload`, {
+          method: 'POST',
+          body: formData
+        });
+
+        if (!res.ok) {
+          const error = await res.json();
+          alert(`Upload failed: ${error.error}`);
+          return;
+        }
+
+        const data = await res.json();
+        onControl('load_track', {
+          url: data.url,
+          title: deriveTrackTitle(data.filename) || 'Uploaded Video',
+          sourceMode: 'upload'
+        });
+      } catch {
+        alert('Upload failed. Make sure your file is under 100MB.');
+      } finally {
+        setIsUploading(false);
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
+      }
       return;
     }
 
@@ -203,46 +191,20 @@ export default function VideoModule({ isHost, sync, onControl, onAckSync }: Vide
 
     onControl('load_track', {
       url: trimmed,
-      title: deriveTrackTitle(trimmed),
+      title: deriveTrackTitle(trimmed) || 'External Video',
       sourceMode: 'url'
     });
+    setUrl('');
   };
 
   const togglePlayback = () => {
     const video = videoRef.current;
-    if (!video) {
-      onControl(sync.paused ? 'play' : 'pause', {
-        currentTime: displayTime,
-        duration,
-        paused: !sync.paused,
-        timestamp: Date.now(),
-        url: sync.src,
-        title
-      });
-      return;
-    }
-
-    if (video.paused) {
-      video.play().catch(() => undefined);
-      onControl('play', {
-        currentTime: Number(video.currentTime || 0),
-        duration: Number(video.duration || duration || 0),
-        paused: false,
-        timestamp: Date.now(),
-        url: sync.src,
-        title
-      });
-    } else {
-      video.pause();
-      onControl('pause', {
-        currentTime: Number(video.currentTime || 0),
-        duration: Number(video.duration || duration || 0),
-        paused: true,
-        timestamp: Date.now(),
-        url: sync.src,
-        title
-      });
-    }
+    onControl(sync.paused ? 'play' : 'pause', {
+      currentTime: video?.currentTime || displayTime,
+      duration,
+      paused: !sync.paused,
+      timestamp: Date.now()
+    });
   };
 
   const activeEmbed = Boolean(sync.src && isYouTubeUrl(sync.src));
@@ -250,31 +212,48 @@ export default function VideoModule({ isHost, sync, onControl, onAckSync }: Vide
   return (
     <section className="rounded-2xl border border-border bg-[rgba(11,18,32,0.75)] p-6 shadow-glass">
       <div className="mb-3 text-sm uppercase tracking-[0.2em] text-accent">Video</div>
-      <div className="mb-2 text-lg font-semibold text-text">Current Media: {title}</div>
-      <div className="mb-4 text-sm text-muted">{formatClock(displayTime)} / {formatClock(duration)}</div>
+      <div className="mb-2 text-lg font-semibold text-text">Media: {title}</div>
+      <div className="mb-4 text-sm text-muted">
+        {displayClock} / {displayDuration}
+      </div>
 
       {isHost ? (
         <div className="space-y-4">
           <div className="grid gap-3 md:grid-cols-[1fr_auto]">
-            <input className="w-full rounded-xl border border-border bg-slate-900 px-4 py-3 text-text outline-none focus:border-accent" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="Paste video or YouTube URL" />
-            <button className="rounded-xl bg-accent px-4 py-3 font-semibold text-slate-950 transition hover:brightness-110" onClick={() => loadVideo()}>Load Video</button>
+            <input
+              className="w-full rounded-xl border border-border bg-slate-900 px-4 py-3 text-text outline-none focus:border-accent"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="Paste video or YouTube URL"
+            />
+            <button
+              className="rounded-xl bg-accent px-4 py-3 font-semibold text-slate-950 transition hover:brightness-110 disabled:opacity-50"
+              onClick={() => loadVideo()}
+              disabled={isUploading}
+            >
+              Load Video
+            </button>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-[1fr_auto]">
-            <label className="flex cursor-pointer items-center justify-center rounded-xl border border-dashed border-border px-4 py-3 text-sm text-muted transition hover:border-accent hover:text-text">
-              Choose Local Video
-              <input
-                type="file"
-                accept="video/*"
-                className="hidden"
-                onChange={(event) => {
-                  const file = event.target.files?.[0] || null;
-                  void loadVideo(file);
-                  event.target.value = '';
-                }}
-              />
-            </label>
-            <button className="rounded-xl border border-border px-4 py-3 font-semibold text-text transition hover:bg-white/5" onClick={togglePlayback}>{sync.paused ? 'Play' : 'Pause'}</button>
+          <div className="flex gap-3">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="video/*"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) loadVideo(file);
+              }}
+              disabled={isUploading}
+            />
+            <button
+              className="rounded-xl bg-slate-800 px-4 py-3 font-semibold text-text transition hover:bg-slate-700 disabled:opacity-50"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isUploading}
+            >
+              {isUploading ? 'Uploading...' : 'Upload Video'}
+            </button>
           </div>
 
           <div className="grid gap-3 md:grid-cols-[auto_1fr] md:items-center">
@@ -286,22 +265,25 @@ export default function VideoModule({ isHost, sync, onControl, onAckSync }: Vide
               step="0.1"
               value={Math.min(displayTime, Math.max(1, duration))}
               className="h-2 w-full cursor-pointer appearance-none rounded-full bg-slate-800"
-              onChange={(event) => {
-                const next = Number(event.target.value);
-                if (videoRef.current) {
-                  videoRef.current.currentTime = next;
-                }
+              onChange={(e) => {
+                const next = Number(e.target.value);
+                if (videoRef.current) videoRef.current.currentTime = next;
                 onControl('seek', {
                   currentTime: next,
                   duration,
                   paused: sync.paused,
-                  timestamp: Date.now(),
-                  url: sync.src,
-                  title
+                  timestamp: Date.now()
                 });
               }}
             />
           </div>
+
+          <button
+            className="w-full rounded-xl bg-accent px-4 py-3 font-semibold text-slate-950 transition hover:brightness-110"
+            onClick={togglePlayback}
+          >
+            {sync.paused ? 'Play' : 'Pause'}
+          </button>
         </div>
       ) : (
         <div className="space-y-4">
@@ -316,42 +298,34 @@ export default function VideoModule({ isHost, sync, onControl, onAckSync }: Vide
                 controls={false}
                 muted={false}
                 onLoadedMetadata={() => {
-                  if (!isHost) return;
-                  const element = videoRef.current;
-                  if (!element) return;
-                  const nextDuration = Number.isFinite(element.duration) ? element.duration : duration;
-                  if (nextDuration > 0 && Number.isFinite(nextDuration)) {
-                    onControl('set_metadata', {
-                      duration: nextDuration,
-                      currentTime: Number(element.currentTime || 0),
-                      title,
-                      url: sync.src,
-                      sourceMode: sync.sourceMode || 'url'
-                    });
+                  if (!isHost && videoRef.current) {
+                    const duration = videoRef.current.duration;
+                    if (duration && Number.isFinite(duration)) {
+                      onControl('set_metadata', {
+                        duration,
+                        currentTime: videoRef.current.currentTime || 0,
+                        title
+                      });
+                    }
                   }
                 }}
                 onEnded={() => {
                   if (!isHost) return;
-                  const element = videoRef.current;
-                  const endedAt = Number(element?.duration || duration || 0);
                   onControl('pause', {
-                    currentTime: endedAt,
-                    duration: endedAt,
+                    currentTime: duration,
+                    duration,
                     paused: true,
-                    timestamp: Date.now(),
-                    url: sync.src,
-                    title,
-                    sourceMode: sync.sourceMode || 'url'
+                    timestamp: Date.now()
                   });
                 }}
               />
             )}
           </div>
-          <div className="text-sm text-muted">Viewer mode: host controls playback. Local controls are disabled.</div>
+          <div className="text-sm text-muted">Viewer mode: host controls playback.</div>
         </div>
       )}
 
-      {!isHost ? null : (
+      {isHost && !activeEmbed ? (
         <video
           ref={videoRef}
           className="hidden"
@@ -359,36 +333,27 @@ export default function VideoModule({ isHost, sync, onControl, onAckSync }: Vide
           controls={false}
           muted={false}
           onLoadedMetadata={() => {
-            if (!isHost) return;
-            const element = videoRef.current;
-            if (!element) return;
-            const nextDuration = Number.isFinite(element.duration) ? element.duration : duration;
-            if (nextDuration > 0 && Number.isFinite(nextDuration)) {
-              onControl('set_metadata', {
-                duration: nextDuration,
-                currentTime: Number(element.currentTime || 0),
-                title,
-                url: sync.src,
-                sourceMode: sync.sourceMode || 'url'
-              });
+            if (videoRef.current) {
+              const duration = videoRef.current.duration;
+              if (duration && Number.isFinite(duration)) {
+                onControl('set_metadata', {
+                  duration,
+                  currentTime: videoRef.current.currentTime || 0,
+                  title
+                });
+              }
             }
           }}
           onEnded={() => {
-            if (!isHost) return;
-            const element = videoRef.current;
-            const endedAt = Number(element?.duration || duration || 0);
             onControl('pause', {
-              currentTime: endedAt,
-              duration: endedAt,
+              currentTime: duration,
+              duration,
               paused: true,
-              timestamp: Date.now(),
-              url: sync.src,
-              title,
-              sourceMode: sync.sourceMode || 'url'
+              timestamp: Date.now()
             });
           }}
         />
-      )}
+      ) : null}
     </section>
   );
 }

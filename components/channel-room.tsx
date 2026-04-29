@@ -22,7 +22,9 @@ function RoomModule(props: ChannelRoomProps) {
   const baseProps = {
     isHost: room.host,
     onControl: props.onControl,
-    onAckSync: props.onAckSync
+    onAckSync: props.onAckSync,
+    channelId: room.channel.id,
+    userId: props.userId
   };
 
   switch (room.channel.type) {
@@ -33,7 +35,16 @@ function RoomModule(props: ChannelRoomProps) {
     case 'video':
       return <VideoModule {...baseProps} sync={room.sync as Record<string, unknown>} />;
     case 'voice':
-      return <VoiceModule isHost={room.host} userId={props.userId} members={room.members} channelMembers={room.membersList} onMuteAll={() => props.onControl('mute_all')} />;
+      return (
+        <VoiceModule
+          isHost={room.host}
+          userId={props.userId}
+          members={room.members}
+          channelMembers={room.membersList}
+          channelId={room.channel.id}
+          onMuteAll={() => props.onControl('mute_all')}
+        />
+      );
     default:
       return null;
   }
