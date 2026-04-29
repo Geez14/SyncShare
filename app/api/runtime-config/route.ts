@@ -1,19 +1,19 @@
 import { NextResponse } from 'next/server';
 
-import { getRuntimeState } from '@/lib/state';
+import { getState } from '@/lib/state';
 
 export const runtime = 'nodejs';
 
 export async function GET() {
-  const runtimeConfig = getRuntimeState();
+  const config = getState().runtimeConfig;
   return NextResponse.json({
-    channel_entry_limits: runtimeConfig.channel_entry_limits,
+    channel_entry_limits: config.channel_entry_limits,
     timing: {
-      stopwatch_tick_seconds: runtimeConfig.timing.stopwatch_tick_seconds,
-      min_schedule_lead_ms: runtimeConfig.timing.min_schedule_lead_ms
+      stopwatch_tick_seconds: config.timing.stopwatch_tick_seconds,
+      min_schedule_lead_ms: config.timing.min_schedule_lead_ms
     },
     rtc: {
-      ice_servers: runtimeConfig.rtc.ice_servers
+      ice_servers: config.rtc.ice_servers
     }
   });
 }

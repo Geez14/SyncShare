@@ -34,6 +34,8 @@ export default function SyncShareApp() {
   const [closeOpen, setCloseOpen] = useState(false);
   const lobbyTimer = useRef<number | null>(null);
   const roomTimer = useRef<number | null>(null);
+  const LOBBY_REFRESH_MS = 10_000;
+  const ROOM_REFRESH_MS = 5_000;
 
   const filteredMine = useMemo(() => filterChannels(mine, search, typeFilter), [mine, search, typeFilter]);
   const filteredOthers = useMemo(() => filterChannels(others, search, typeFilter), [others, search, typeFilter]);
@@ -90,7 +92,7 @@ export default function SyncShareApp() {
     if (!room) {
       lobbyTimer.current = window.setInterval(() => {
         void refreshLobby();
-      }, 3000);
+      }, LOBBY_REFRESH_MS);
     }
 
     return () => {
@@ -116,7 +118,7 @@ export default function SyncShareApp() {
     }
     roomTimer.current = window.setInterval(() => {
       void refreshRoomState(room.channel.id);
-    }, 2000);
+    }, ROOM_REFRESH_MS);
 
     return () => {
       if (roomTimer.current) {
