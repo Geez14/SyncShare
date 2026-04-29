@@ -37,8 +37,6 @@ export default function MusicModule({
   const [uiTick, setUiTick] = useState(0);
   const [currentTime, setCurrentTime] = useState(Number(sync.currentTime || 0));
   const [trackTitle, setTrackTitle] = useState(sync.trackTitle || 'Untitled');
-  const [isUploading, setIsUploading] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Tick for UI updates (1 second interval)
   useEffect(() => {
@@ -89,42 +87,7 @@ export default function MusicModule({
   const displayClock = useMemo(() => formatClock(displayTime), [displayTime, uiTick]);
   const displayDuration = useMemo(() => formatClock(duration), [duration, uiTick]);
 
-  const loadTrack = async (file?: File | null) => {
-    if (file) {
-      // Upload file to server
-      setIsUploading(true);
-      try {
-        const formData = new FormData();
-        formData.append('file', file);
-
-        const res = await fetch(`/api/channels/${channelId}/upload`, {
-          method: 'POST',
-          body: formData
-        });
-
-        if (!res.ok) {
-          const error = await res.json();
-          alert(`Upload failed: ${error.error}`);
-          return;
-        }
-
-        const data = await res.json();
-        onControl('load_track', {
-          url: data.url,
-          title: deriveTrackTitle(data.filename) || 'Uploaded Track',
-          sourceMode: 'upload'
-        });
-      } catch {
-        alert('Upload failed. Make sure your file is under 100MB.');
-      } finally {
-        setIsUploading(false);
-        if (fileInputRef.current) {
-          fileInputRef.current.value = '';
-        }
-      }
-      return;
-    }
-
+  const loadTrack = async () => {
     const trimmed = url.trim();
     if (!trimmed) return;
 
@@ -178,34 +141,14 @@ export default function MusicModule({
               placeholder="Paste audio URL (MP3, OGG, WAV)"
             />
             <button
-              className="rounded-xl bg-accent px-4 py-3 font-semibold text-slate-950 transition hover:brightness-110 disabled:opacity-50"
+              className="rounded-xl bg-accent px-4 py-3 font-semibold text-slate-950 transition hover:brightness-110"
               onClick={() => loadTrack()}
-              disabled={isUploading}
             >
               Load URL
             </button>
           </div>
 
-          <div className="flex gap-3">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="audio/*"
-              className="hidden"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) loadTrack(file);
-              }}
-              disabled={isUploading}
-            />
-            <button
-              className="rounded-xl bg-slate-800 px-4 py-3 font-semibold text-text transition hover:bg-slate-700 disabled:opacity-50"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isUploading}
-            >
-              {isUploading ? 'Uploading...' : 'Upload Audio'}
-            </button>
-          </div>
+          {/* TODO: File upload will be re-enabled once S3 bucket credentials are configured */}
 
           <div className="grid gap-3 md:grid-cols-[auto_1fr_auto] md:items-center">
             <span className="text-sm text-muted">{displayClock}</span>
