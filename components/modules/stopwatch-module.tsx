@@ -20,7 +20,7 @@ export default function StopwatchModule({ isHost, sync, onControl }: StopwatchMo
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
-    const timer = setInterval(() => setTick((value) => value + 1), 250);
+    const timer = setInterval(() => setTick((value) => value + 1), 1000);
     return () => clearInterval(timer);
   }, []);
 

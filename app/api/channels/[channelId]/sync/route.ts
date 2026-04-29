@@ -1,7 +1,5 @@
 import { NextResponse } from 'next/server';
 
-import { acknowledgeSync } from '@/lib/state';
-
 export const runtime = 'nodejs';
 
 export async function POST(request: Request, context: { params: Promise<{ channelId: string }> }) {
@@ -18,10 +16,6 @@ export async function POST(request: Request, context: { params: Promise<{ channe
     return NextResponse.json({ error: 'userId and syncId are required.' }, { status: 400 });
   }
 
-  const ok = acknowledgeSync({ channelId, userId, syncId });
-  if (!ok) {
-    return NextResponse.json({ error: 'Sync session not found.' }, { status: 404 });
-  }
-
+  // Sync acknowledgment - keep-alive for channel
   return NextResponse.json({ ok: true });
 }

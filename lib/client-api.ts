@@ -9,12 +9,24 @@ async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Promi
     }
   });
 
-  const payload = (await response.json().catch(() => null)) as T;
+  const payload = (await response.json().catch(() => null)) as T | null;
+
   if (!response.ok) {
-    throw payload ?? new Error('Request failed');
+    if (response.status === 413) {
+      throw new Error('Request too large. Try uploading the file to an external host or use a smaller file.');
+    }
+    if (response.status === 403) {
+      throw new Error('Unauthorized. Your session may have expired. Please rejoin the channel.');
+    }
+    if (response.status === 404) {
+      throw new Error('Not found. The channel or resource may have been removed.');
+    }
+
+    // Fall back to any JSON error payload, or a generic message
+    throw (payload as unknown) ?? new Error('Request failed');
   }
 
-  return payload;
+  return payload as T;
 }
 
 export async function getRuntimeConfig(): Promise<RuntimeConfig> {
