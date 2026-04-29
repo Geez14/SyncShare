@@ -12,8 +12,6 @@ import type {
   RuntimeConfig
 } from './types';
 import { getRuntimeConfig } from './runtime-config';
-import { unlink } from 'fs/promises';
-import { join } from 'path';
 import { logger } from './logger';
 
 interface AppRuntimeState {
@@ -86,26 +84,7 @@ function buildMediaSync(channel: ChannelRecord): Record<string, unknown> {
   };
 }
 
-async function deleteChannelFiles(channel: ChannelRecord): Promise<void> {
-  if (!channel.trackUrl) return;
 
-  try {
-    // Extract filename from URL (e.g., "/uploads/1234567890_filename.ext" -> "1234567890_filename.ext")
-    const filename = channel.trackUrl.split('/').pop();
-    if (!filename) return;
-
-    const uploadDir = join(process.cwd(), 'public', 'uploads');
-    const filepath = join(uploadDir, filename);
-
-    // Delete the file
-    await unlink(filepath);
-    logger.info('Uploaded file deleted during cleanup', { filename });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      logger.error('Failed to delete uploaded file', { err });
-    }
-  }
-}
 
 function cleanupEmptyChannels(state: AppRuntimeState): void {
   const now = Date.now();
@@ -143,9 +122,6 @@ function cleanupEmptyChannels(state: AppRuntimeState): void {
       channelId,
       elapsedSeconds
     });
-    
-    // Delete associated uploaded files
-    deleteChannelFiles(channel).catch((err) => logger.error('File deletion failed during cleanup', { err }));
     
     state.channelMembers.delete(channelId);
     state.emptyChannelSince.delete(channelId);
@@ -335,9 +311,6 @@ export function closeChannel(input: { channelId: string; userId: string }): bool
   const state = getState();
   const channel = state.channels.get(input.channelId);
   if (!channel || channel.host !== input.userId) return false;
-
-  // Delete associated uploaded files
-  deleteChannelFiles(channel).catch((err) => logger.error('File deletion failed on channel close', { err }));
 
   state.channelMembers.delete(input.channelId);
   state.emptyChannelSince.delete(input.channelId);
